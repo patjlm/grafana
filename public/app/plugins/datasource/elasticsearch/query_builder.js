@@ -1,16 +1,21 @@
 define([
-  "angular"
 ],
-function (angular) {
+function () {
   'use strict';
 
   function ElasticQueryBuilder(options) {
     this.timeField = options.timeField;
+    this.esVersion = options.esVersion;
   }
 
   ElasticQueryBuilder.prototype.getRangeFilter = function() {
     var filter = {};
     filter[this.timeField] = {"gte": "$timeFrom", "lte": "$timeTo"};
+
+    if (this.esVersion >= 2) {
+      filter[this.timeField]["format"] = "epoch_millis";
+    }
+
     return filter;
   };
 
@@ -45,12 +50,23 @@ function (angular) {
     return queryNode;
   };
 
-  ElasticQueryBuilder.prototype.getInterval = function(agg) {
-    if (agg.settings && agg.settings.interval !== 'auto') {
-      return agg.settings.interval;
-    } else {
-      return '$interval';
+  ElasticQueryBuilder.prototype.getDateHistogramAgg = function(aggDef) {
+    var esAgg = {};
+    var settings = aggDef.settings || {};
+    esAgg.interval = settings.interval;
+    esAgg.field = this.timeField;
+    esAgg.min_doc_count = settings.min_doc_count || 0;
+    esAgg.extended_bounds = {min: "$timeFrom", max: "$timeTo"};
+
+    if (esAgg.interval === 'auto') {
+      esAgg.interval = "$interval";
     }
+
+    if (this.esVersion >= 2) {
+      esAgg.format = "epoch_millis";
+    }
+
+    return esAgg;
   };
 
   ElasticQueryBuilder.prototype.getFiltersAgg = function(aggDef) {
@@ -82,9 +98,11 @@ function (angular) {
   };
 
   ElasticQueryBuilder.prototype.build = function(target) {
-    if (target.rawQuery) {
-      return angular.fromJson(target.rawQuery);
-    }
+    // make sure query has defaults;
+    target.metrics = target.metrics || [{ type: 'count', id: '1' }];
+    target.dsType = 'elasticsearch';
+    target.bucketAggs = target.bucketAggs || [{type: 'date_histogram', id: '2', settings: {interval: 'auto'}}];
+    target.timeField =  this.timeField;
 
     var i, nestedAggs, metric;
     var query = {
@@ -123,12 +141,7 @@ function (angular) {
 
       switch(aggDef.type) {
         case 'date_histogram': {
-          esAgg["date_histogram"] = {
-            "interval": this.getInterval(aggDef),
-            "field": this.timeField,
-            "min_doc_count": 0,
-            "extended_bounds": { "min": "$timeFrom", "max": "$timeTo" }
-          };
+          esAgg["date_histogram"] = this.getDateHistogramAgg(aggDef);
           break;
         }
         case 'filters': {
